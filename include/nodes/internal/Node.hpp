@@ -98,9 +98,15 @@ public Q_SLOTS: // data propagation
   void
   onDataUpdated(PortIndex index);
 
-  /// update the graphic part if the size of the embeddedwidget changes
-  void
-  onNodeSizeUpdated();
+protected:
+  static constexpr bool PortAdded = true;
+  static constexpr bool PortRemoved = false;
+  void updatePortChange(PortType portType, PortIndex portIndex, bool portAdded);
+
+  /// Recalculates the nodes images.
+  /// A data change can result in the node taking more space than before,
+  /// so this forces a recalculate + repaint on the affected node.
+  void recalculateVisuals() const;
 
 private:
 

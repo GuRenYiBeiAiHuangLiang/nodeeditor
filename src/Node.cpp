@@ -35,10 +35,11 @@ Node(std::unique_ptr<NodeDataModel> && dataModel)
 
   // propagate data: model => node
   connect(_nodeDataModel.get(), &NodeDataModel::dataUpdated,
-          this, &Node::onDataUpdated);
-
-  connect(_nodeDataModel.get(), &NodeDataModel::embeddedWidgetSizeUpdated,
-          this, &Node::onNodeSizeUpdated );
+      this, &Node::onDataUpdated);
+  connect(_nodeDataModel.get(), &NodeDataModel::portAdded, this,
+      [this](PortType type, PortIndex index) { updatePortChange(type, index, PortAdded); });
+  connect(_nodeDataModel.get(), &NodeDataModel::portRemoved, this,
+      [this](PortType type, PortIndex index) { updatePortChange(type, index, PortRemoved); });;
 }
 
 
@@ -59,6 +60,8 @@ save() const
   obj["x"] = _nodeGraphicsObject->pos().x();
   obj["y"] = _nodeGraphicsObject->pos().y();
   nodeJson["position"] = obj;
+  nodeJson["in"]  = (int)_nodeDataModel->nPorts(PortType::In);
+  nodeJson["out"] = (int)_nodeDataModel->nPorts(PortType::Out);
 
   return nodeJson;
 }
@@ -76,6 +79,11 @@ restore(QJsonObject const& json)
   _nodeGraphicsObject->setPos(point);
 
   _nodeDataModel->restore(json["model"].toObject());
+
+  if(json.contains("in"))
+    _nodeState._inConnections.resize(json["in"].toInt());
+  if(json.contains("out"))
+    _nodeState._outConnections.resize(json["out"].toInt());
 }
 
 
@@ -190,11 +198,7 @@ propagateData(std::shared_ptr<NodeData> nodeData,
 {
   _nodeDataModel->setInData(std::move(nodeData), inPortIndex, connectionId);
 
-  //Recalculate the nodes visuals. A data change can result in the node taking more space than before, so this forces a recalculate+repaint on the affected node
-  _nodeGraphicsObject->setGeometryChanged();
-  _nodeGeometry.recalculateSize();
-  _nodeGraphicsObject->update();
-  _nodeGraphicsObject->moveConnections();
+  recalculateVisuals();
 }
 
 
@@ -213,22 +217,60 @@ onDataUpdated(PortIndex index)
 
 void
 Node::
-onNodeSizeUpdated()
+updatePortChange(PortType portType, PortIndex portIndex, bool portAdded)
 {
-    if( nodeDataModel()->embeddedWidget() )
+  Q_UNUSED(portIndex);
+  std::vector<NodeState::ConnectionPtrSet>* connections{ nullptr };
+
+  switch (portType)
+  {
+  case PortType::In:
+      _nodeGeometry._nSources = _nodeDataModel->nPorts(portType);
+      connections = &_nodeState._inConnections;
+      break;
+  case PortType::Out:
+      _nodeGeometry._nSinks = _nodeDataModel->nPorts(portType);
+      connections = &_nodeState._outConnections;
+      break;
+  default:
+      throw std::invalid_argument("Invalid PortType in Node::onPortAdded");
+  }
+  
+  const int connectionPosDiff{ portAdded ? 1 : -1 };
+
+  for (auto it = connections->begin() + portIndex; it != connections->end(); ++it)
+  {
+    for (auto&& item : *it)
     {
-        nodeDataModel()->embeddedWidget()->adjustSize();
+      auto* connection = item.second;
+      connection->setNodeToPort(
+        *connection->getNode(portType), 
+        portType, 
+        connection->getPortIndex(portType) + connectionPosDiff);
     }
-    nodeGeometry().recalculateSize();
-    for(PortType type: {PortType::In, PortType::Out})
-    {
-        for(auto& conn_set : nodeState().getEntries(type))
-        {
-            for(auto& pair: conn_set)
-            {
-                Connection* conn = pair.second;
-                conn->getConnectionGraphicsObject().move();
-            }
-        }
-    }
+  }
+
+  if (portAdded)
+  {
+      connections->emplace(connections->begin() + portIndex);
+  }
+  else
+  {
+      // \todo Remove the lost connections.
+      connections->erase(connections->begin() + portIndex);
+  }
+  assert(_nodeDataModel->nPorts(portType) == connections->size());
+
+  recalculateVisuals();
+}
+
+void
+Node::
+recalculateVisuals() const
+{
+  //Recalculate the nodes visuals. A data change can result in the node taking more space than before, so this forces a recalculate+repaint on the affected node
+  _nodeGraphicsObject->setGeometryChanged();
+  _nodeGeometry.recalculateSize();
+  _nodeGraphicsObject->update();
+  _nodeGraphicsObject->moveConnections();
 }
